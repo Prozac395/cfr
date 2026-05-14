@@ -556,8 +556,7 @@ public class CondenseConditionals {
 
             s0.replaceStatement(new IfStatement(BytecodeLoc.NONE, negated));
 
-            // Remove S1: redirect S0 fallthrough to S2
-            Op03SimpleStatement s2fall = s2.getTargets().get(0);
+            // Remove S1: redirect S0 fallthrough to S2.
             s0.replaceTarget(s1, s2);
             s2.replaceSource(s1, s0);
             s1.getSources().clear();
