@@ -75,6 +75,10 @@ public class StructuredIf extends AbstractStructuredStatement implements CanRemo
         return conditionalExpression;
     }
 
+    public void setConditionalExpression(ConditionalExpression conditionalExpression) {
+        this.conditionalExpression = conditionalExpression;
+    }
+
     public Op04StructuredStatement getIfTaken() {
         return ifTaken;
     }

@@ -457,14 +457,31 @@ public class CondenseConditionals {
      *
      *   if (!(o instanceof T)) goto ELSE
      *   T b = (T)o;
-     *   if (!cond) goto ELSE
+     *   <continuation>
      *
-     * Absorb the cast+assign into the first condition (without reordering):
+     * where <continuation> may be either another `if (!cond) goto ELSE` (chain
+     * shape) or ordinary body code (bare / chain-tail shape).
+     *
+     * In either case, absorb the cast+assign into the first condition (without
+     * reordering) using the synthetic null-check trick:
      *
      *   if (!(o instanceof T && null != (b = (T)o))) goto ELSE
-     *   if (!cond) goto ELSE
+     *   <continuation>
      *
-     * Now the two ifs are adjacent and condenseConditionals can merge them.
+     * `null != (b = (T)o)` is tautologically true under the instanceof guard
+     * (instanceof excludes null; cast of non-null T is non-null), so the
+     * boolean semantics are unchanged; the assignment lives as a side effect
+     * inside the condition.
+     *
+     * For the chain shape, S0 and S2 are now adjacent same-target ifs and
+     * condenseConditionals merges them. For the bare/tail shape there is
+     * nothing to merge — S2 is just body. Either way, scope discovery's
+     * j16 lift (InstanceOfAssignRewriter) then either turns the absorbed
+     * condition into  instanceof T b && null != b  (when b is a fresh local),
+     * or leaves it as  instanceof T && null != (b = (T)o)  (when b is
+     * method-scoped). InstanceOfMatchCheckTransformer is the final pass that
+     * either elides the redundant null!=b clause or reverse-lifts the
+     * still-absorbed assignment back into a body statement.
      */
     public static boolean condenseInstanceOfAssign(List<Op03SimpleStatement> statements) {
         boolean effect = false;
@@ -495,13 +512,27 @@ public class CondenseConditionals {
             if (!instanceOf.getLhs().equals(cast.getChild())) continue;
 
             Op03SimpleStatement s2 = s1.getTargets().get(0);
-            Statement s2inner = s2.getStatement();
-            if (!(s2inner instanceof IfStatement)) continue;
             if (s2.getSources().size() != 1) continue;
 
-            Op03SimpleStatement s2taken = s2.getTargets().get(1);
-            // Both ifs must jump to the same ELSE target
-            if (s0taken != s2taken) continue;
+            // If S2 is another `if`, require it shares S0's taken (ELSE) target so
+            // condenseConditionals can later merge them. If S2 is anything else
+            // (the bare/tail case), just absorb — nothing to merge with.
+            //
+            // Refuse if S2 is an unconditional jump (`goto`): that indicates the
+            // cast-assign sits between the if-taken edge and a branch-rejoin
+            // (typically the negated-pattern shape `if (!(o instanceof T s))
+            // {...} else {use(s)}`, where `b = (T)o; goto THEN` skips over the
+            // else-block). Absorbing into the condition there destroys the
+            // structure-recovery hint that this is an if/else.
+            Statement s2inner = s2.getStatement();
+            // Note: IfStatement extends GotoStatement, so use exact-class equality
+            // for the goto refusal — `instanceof GotoStatement` would also match
+            // IfStatement and wrongly suppress the chain-merge case.
+            if (s2inner.getClass() == GotoStatement.class) continue;
+            if (s2inner instanceof IfStatement) {
+                Op03SimpleStatement s2taken = s2.getTargets().get(1);
+                if (s0taken != s2taken) continue;
+            }
 
             // Absorb: create  null != (b = (T)o)  as a ConditionalExpression
             Expression assignExpr = assign.getInliningExpression();

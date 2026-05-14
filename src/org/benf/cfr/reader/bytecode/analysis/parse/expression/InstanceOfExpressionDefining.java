@@ -94,6 +94,14 @@ public class InstanceOfExpressionDefining extends AbstractExpression {
         return lhs;
     }
 
+    public LValue getDefines() {
+        return defines;
+    }
+
+    public JavaTypeInstance getTypeInstance() {
+        return typeInstance;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (o == null) return false;

@@ -1,53 +1,76 @@
 package org.benf.cfr.reader.bytecode.analysis.opgraph.op4rewriters.transformers;
 
+import org.benf.cfr.reader.bytecode.analysis.loc.BytecodeLoc;
 import org.benf.cfr.reader.bytecode.analysis.opgraph.Op04StructuredStatement;
-import org.benf.cfr.reader.bytecode.analysis.opgraph.op4rewriters.ExpressionReplacingRewriter;
 import org.benf.cfr.reader.bytecode.analysis.parse.Expression;
 import org.benf.cfr.reader.bytecode.analysis.parse.LValue;
+import org.benf.cfr.reader.bytecode.analysis.parse.expression.AssignmentExpression;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.BoolOp;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.BooleanExpression;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.BooleanOperation;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.CastExpression;
+import org.benf.cfr.reader.bytecode.analysis.parse.expression.CompOp;
+import org.benf.cfr.reader.bytecode.analysis.parse.expression.ComparisonOperation;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.ConditionalExpression;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.InstanceOfExpression;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.InstanceOfExpressionDefining;
+import org.benf.cfr.reader.bytecode.analysis.parse.expression.Literal;
+import org.benf.cfr.reader.bytecode.analysis.parse.expression.LValueExpression;
+import org.benf.cfr.reader.bytecode.analysis.types.JavaTypeInstance;
 import org.benf.cfr.reader.bytecode.analysis.structured.StructuredScope;
 import org.benf.cfr.reader.bytecode.analysis.structured.StructuredStatement;
 import org.benf.cfr.reader.bytecode.analysis.structured.statement.Block;
 import org.benf.cfr.reader.bytecode.analysis.structured.statement.StructuredAssignment;
 import org.benf.cfr.reader.bytecode.analysis.structured.statement.StructuredIf;
-import org.benf.cfr.reader.bytecode.analysis.types.JavaTypeInstance;
+import org.benf.cfr.reader.util.collections.ListFactory;
+import org.benf.cfr.reader.util.collections.SetFactory;
 
+import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 
 /*
- * Lift the j18+ post-pattern-matching shape:
+ * Cleanup pass for the j18+ instanceof pattern shape that op03's
+ * condenseInstanceOfAssign and scope discovery's j16 lift produce together.
  *
- *   if (obj instanceof T) {
- *       T s = (T) obj;
- *       ...
- *   }
+ * We absorb every cast-assign into its preceding if's condition with the
+ * synthetic null-check trick:
  *
- * into the pattern form:
+ *   if (!(o instanceof T)) goto E;          \
+ *   T b = (T)o;                              >  ==>  if (!(o instanceof T && null != (b = (T)o))) goto E;
+ *   <continuation>                          /        <continuation>
  *
- *   if (obj instanceof T s) {
- *       ...
- *   }
+ * Then scope discovery, via InstanceOfAssignRewriter's MatchType.SIMPLE_J16,
+ * tries to lift the bound variable into the instanceof:
+ *   - SUCCESS (b is a fresh local): condition becomes
+ *       instanceof T b && null != b
+ *     The null-check is now redundant — instanceof T b implies b != null —
+ *     but no earlier pass elides it.
+ *   - REFUSAL (b is method-scoped, used outside the if): condition stays
+ *       instanceof T && null != (b = (T)o)
+ *     The original pre-pattern code was nicer than this absorbed form.
  *
- * The j14/j16 contrived shape (cast+assign folded inside the condition via a
- * self-comparison) is handled by InstanceOfAssignRewriter at scope-discovery
- * time. j18+ emits the straightforward shape above instead, so the lift has
- * to happen post-hoc here.
+ * This pass walks each StructuredIf's top-level AND chain and:
  *
- * Also completes the compound case set up by the op03 condense pass that
- * turns `instanceof T s && cond` j21 bytecode into:
+ *   (1) Drops `null != b` operands (in that exact order — the canary shape
+ *       this pipeline synthesises) when a sibling defines b via
+ *       `instanceof T b`.
+ *   (2) Pushes a *trailing* `null != (b = (T)o)` operand down into the body
+ *       as an assignment statement, when no sibling defines b. Only the LAST
+ *       operand qualifies — see correctness note below.
  *
- *   if (obj instanceof T && cond) {
- *       s = (T) obj;
- *       ...
- *   }
- *
- * by collapsing the leading assignment into an instanceof-defining pattern.
+ * Correctness note on the push-down:
+ *   Original: instanceof T && null != (b = (T)o) && cond2
+ *     - instanceof T true, cond2 false → the && evaluates left-to-right, the
+ *       assignment side-effect of the middle clause runs BEFORE cond2 is
+ *       checked, so b IS assigned even when the if isn't taken.
+ *   Naive push-down to: if (instanceof T && cond2) { b = (T)o; ... }
+ *     - cond2 false → body not entered → b NOT assigned. Differs.
+ *   For a method-scoped b that's read after the if, this is observable.
+ *   Therefore push the assignment down only if it is the LAST operand, where
+ *   no later condition can short-circuit and the side effect would have been
+ *   observable only on the if-taken path anyway.
  */
 public class InstanceOfMatchCheckTransformer implements StructuredStatementTransformer {
 
@@ -60,77 +83,170 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
     public StructuredStatement transform(StructuredStatement in, StructuredScope scope) {
         in.transformStructuredChildren(this, scope);
         if (in instanceof StructuredIf) {
-            tryLift((StructuredIf) in);
+            tidy((StructuredIf) in);
         }
         return in;
     }
 
-    private static void tryLift(StructuredIf sif) {
-        Op04StructuredStatement firstContainer = firstStatementOf(sif.getIfTaken());
-        if (firstContainer == null) return;
-        StructuredStatement first = firstContainer.getStatement();
-        if (!(first instanceof StructuredAssignment)) return;
-        StructuredAssignment assign = (StructuredAssignment) first;
+    private static void tidy(StructuredIf sif) {
+        ConditionalExpression cond = sif.getConditionalExpression();
+        List<ConditionalExpression> operands = ListFactory.newList();
+        flattenAnd(cond, operands);
+        if (operands.size() <= 1) return;
 
-        // Lift only when the assignment IS the variable's creation point.
-        LValue lvalue = assign.getLvalue();
-        if (!assign.isCreator(lvalue)) return;
-
-        if (!(assign.getRvalue() instanceof CastExpression)) return;
-        CastExpression cast = (CastExpression) assign.getRvalue();
-        Expression castSubject = cast.getChild();
-        JavaTypeInstance castType = cast.getInferredJavaType().getJavaTypeInstance();
-
-        InstanceOfExpression target = findReachable(sif.getConditionalExpression(), castSubject, castType);
-        if (target == null) return;
-
-        InstanceOfExpressionDefining replacement = new InstanceOfExpressionDefining(
-                target.getLoc(),
-                target.getInferredJavaType(),
-                target.getLhs(),
-                castType,
-                lvalue
-        );
-
-        sif.rewriteExpressions(new ExpressionReplacingRewriter(target, replacement));
-        firstContainer.nopOut();
-    }
-
-    private static Op04StructuredStatement firstStatementOf(Op04StructuredStatement s) {
-        StructuredStatement stmt = s.getStatement();
-        if (stmt instanceof Block) {
-            List<Op04StructuredStatement> bs = ((Block) stmt).getBlockStatements();
-            if (bs.isEmpty()) return null;
-            return bs.get(0);
+        Set<LValue> defined = SetFactory.newSet();
+        for (ConditionalExpression op : operands) {
+            LValue d = getDefinedLValue(op);
+            if (d != null) defined.add(d);
         }
-        return s;
+
+        boolean changed = false;
+        AssignmentExpression pushDown = null;
+
+        // (2) Push-down candidate: only the LAST operand, only if it's our
+        // canary's full shape — `null != (b = (T)o)` paired with a plain
+        // `instanceof T` sibling whose subject and type match the cast.
+        // The sibling-match is what makes the rewrite semantics-preserving:
+        // with `instanceof T` true on the if-taken path, `(T)o` is provably
+        // non-null, so the null-check it carries is dead weight. Without
+        // that pairing (e.g. a user-written `null != (b = somefunc())`), the
+        // null-check is doing real work and we must NOT push it down — see
+        // InstanceOfPatternTest20 for the negative case.
+        ConditionalExpression last = operands.get(operands.size() - 1);
+        AssignmentExpression absorbed = getAbsorbedAssignment(last);
+        if (absorbed != null
+                && !defined.contains(absorbed.getlValue())
+                && hasMatchingInstanceofSibling(absorbed, operands)) {
+            pushDown = absorbed;
+            operands.remove(operands.size() - 1);
+            changed = true;
+        }
+
+        // (1) Drop redundant null-checks of variables bound by a sibling defining instanceof.
+        Iterator<ConditionalExpression> it = operands.iterator();
+        while (it.hasNext()) {
+            LValue v = getNullCheckedLValue(it.next());
+            if (v != null && defined.contains(v)) {
+                it.remove();
+                changed = true;
+            }
+        }
+
+        if (!changed) return;
+        if (operands.isEmpty()) return; // defensive — shouldn't happen with well-formed input
+
+        ConditionalExpression rebuilt = operands.get(0);
+        for (int i = 1; i < operands.size(); i++) {
+            rebuilt = new BooleanOperation(BytecodeLoc.NONE, rebuilt, operands.get(i), BoolOp.AND);
+        }
+        sif.setConditionalExpression(rebuilt);
+
+        if (pushDown != null) {
+            prependAssignment(sif, pushDown);
+        }
     }
 
     /*
-     * Find an InstanceOfExpression matching (subject, type) reachable from the
-     * top of `cond` purely via &&-chain (and BooleanExpression wrapping). An
-     * instanceof to the rhs of a disjunction, or inside a not doesn't positively assign
-     * the then branch (though a 'not' can assign the else branch (!))
+     * Add the assignment to the start of the block inside the conditional.
      */
-    private static InstanceOfExpression findReachable(Expression cond, Expression subject, JavaTypeInstance type) {
-        if (cond instanceof BooleanExpression) {
-            return findReachable(((BooleanExpression) cond).getInner(), subject, type);
+    private static void prependAssignment(StructuredIf sif, AssignmentExpression assign) {
+        StructuredAssignment newAssign = new StructuredAssignment(
+                BytecodeLoc.NONE, assign.getlValue(), assign.getrValue(), false);
+        Op04StructuredStatement newAssignContainer = new Op04StructuredStatement(newAssign);
+
+        Op04StructuredStatement ifTaken = sif.getIfTaken();
+        StructuredStatement body = ifTaken.getStatement();
+        if (body instanceof Block) {
+            ((Block) body).getBlockStatements().add(0, newAssignContainer);
+        } else {
+            LinkedList<Op04StructuredStatement> kids = new LinkedList<Op04StructuredStatement>();
+            kids.add(newAssignContainer);
+            kids.add(new Op04StructuredStatement(body));
+            ifTaken.replaceStatement(new Block(kids, true));
         }
-        if (cond instanceof InstanceOfExpression) {
-            InstanceOfExpression ioe = (InstanceOfExpression) cond;
-            if (ioe.getLhs().equals(subject) && ioe.getTypeInstance().equals(type)) {
-                return ioe;
-            }
-            return null;
+    }
+
+    // Todo : This feels like it should be utility elsewhere.
+    private static void flattenAnd(ConditionalExpression e, List<ConditionalExpression> out) {
+        if (e instanceof BooleanOperation && ((BooleanOperation) e).getOp() == BoolOp.AND) {
+            BooleanOperation bo = (BooleanOperation) e;
+            flattenAnd(bo.getLhs(), out);
+            flattenAnd(bo.getRhs(), out);
+            return;
         }
-        if (cond instanceof BooleanOperation) {
-            BooleanOperation bo = (BooleanOperation) cond;
-            if (bo.getOp() != BoolOp.AND) return null;
-            InstanceOfExpression r = findReachable(bo.getLhs(), subject, type);
-            if (r != null) return r;
-            return findReachable(bo.getRhs(), subject, type);
+        out.add(e);
+    }
+
+    /*
+     * InstanceOfExpressionDefining extends AbstractExpression but does NOT
+     * implement ConditionalExpression — it must be wrapped in BooleanExpression
+     * to appear inside a boolean condition. Since `op` is typed as a
+     * ConditionalExpression, the only way to see an InstanceOfExpressionDefining
+     * here is through that wrap. ComparisonOperation by contrast already
+     * implements ConditionalExpression directly, so the matchers below don't
+     * need to unwrap.
+     */
+    private static LValue getDefinedLValue(ConditionalExpression op) {
+        if (!(op instanceof BooleanExpression)) return null;
+        Expression inner = ((BooleanExpression) op).getInner();
+        if (inner instanceof InstanceOfExpressionDefining) {
+            return ((InstanceOfExpressionDefining) inner).getDefines();
         }
         return null;
     }
 
+    /*
+     * Recognise only the exact canary shape introduced by condenseInstanceOfAssign
+     * (Literal.NULL on the LHS, target expression on the RHS, op NE).
+     * Returns the RHS, or null if `op` is not the canary shape.
+     */
+    private static Expression getCanaryRhs(ConditionalExpression op) {
+        if (!(op instanceof ComparisonOperation)) return null;
+        ComparisonOperation cmp = (ComparisonOperation) op;
+        if (cmp.getOp() != CompOp.NE) return null;
+        if (!Literal.NULL.equals(cmp.getLhs())) return null;
+        return cmp.getRhs();
+    }
+
+    /*
+     * `null != b` — the post-j16-lift residue, redundant given a sibling
+     * `instanceof T b` clause.
+     */
+    private static LValue getNullCheckedLValue(ConditionalExpression op) {
+        Expression rhs = getCanaryRhs(op);
+        if (!(rhs instanceof LValueExpression)) return null;
+        return ((LValueExpression) rhs).getLValue();
+    }
+
+    /*
+     * `null != (b = (T)o)` — the assignment still embedded in the canary
+     * because the j16 lift refused (e.g. b is method-scoped).
+     */
+    private static AssignmentExpression getAbsorbedAssignment(ConditionalExpression op) {
+        Expression rhs = getCanaryRhs(op);
+        return rhs instanceof AssignmentExpression ? (AssignmentExpression) rhs : null;
+    }
+
+    /*
+     * The canary always pairs the absorbed `null != (b = (T)o)` with a plain
+     * `instanceof T` whose subject and type match the cast. We require that
+     * pairing to be confident this clause came from condenseInstanceOfAssign
+     * rather than user code where the null-check carries semantic weight.
+     */
+    private static boolean hasMatchingInstanceofSibling(AssignmentExpression absorbed, List<ConditionalExpression> operands) {
+        if (!(absorbed.getrValue() instanceof CastExpression)) return false;
+        CastExpression cast = (CastExpression) absorbed.getrValue();
+        Expression castSubject = cast.getChild();
+        JavaTypeInstance castType = cast.getInferredJavaType().getJavaTypeInstance();
+        for (ConditionalExpression op : operands) {
+            if (!(op instanceof BooleanExpression)) continue;
+            Expression inner = ((BooleanExpression) op).getInner();
+            if (!(inner instanceof InstanceOfExpression)) continue;
+            InstanceOfExpression ioe = (InstanceOfExpression) inner;
+            if (!ioe.getLhs().equals(castSubject)) continue;
+            if (!ioe.getTypeInstance().equals(castType)) continue;
+            return true;
+        }
+        return false;
+    }
 }
