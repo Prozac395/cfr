@@ -322,12 +322,17 @@ public class LambdaRewriter implements Op04Rewriter, ExpressionRewriter {
         /* Now, we can call the synthetic function directly and emit it, or we could inline the synthetic, and no
          * longer emit it.
          */
-        Method lambdaMethod;
+        Method lambdaMethod = null;
         try {
             lambdaMethod = classFile.getMethodByPrototype(lambdaFn);
         } catch (NoSuchMethodException ignore) {
-            // This might happen if you're using a JRE which doesn't have support classes, etc.
-            return dynamicExpression;
+            // The method handle's target is not directly declared on its containing
+            // class - typically a method reference to an inherited Object method
+            // (e.g. AnnotatedType::toString, where toString is inherited via the
+            // interface rather than declared on it). The inline-the-body path
+            // below is unreachable without the Method, but LambdaExpressionFallback
+            // only needs the prototype and can emit the method reference as-is.
+            lambdaMethod = null;
         }
         for (int x = 0, len = curriedArgs.size(); x < len; ++x) {
             /*
@@ -346,7 +351,7 @@ public class LambdaRewriter implements Op04Rewriter, ExpressionRewriter {
             }
             curriedArgs.set(x, CastExpression.removeImplicit(curriedArg));
         }
-        if (this.typeInstance.equals(lambdaTypeRefLocation) && lambdaMethod.testAccessFlag(AccessFlagMethod.ACC_SYNTHETIC)) {
+        if (lambdaMethod != null && this.typeInstance.equals(lambdaTypeRefLocation) && lambdaMethod.testAccessFlag(AccessFlagMethod.ACC_SYNTHETIC)) {
             try {
                 /*
                  * This is a local synthetic lambda - we'll try to inline it.
