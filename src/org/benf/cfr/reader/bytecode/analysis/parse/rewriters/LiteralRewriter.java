@@ -39,12 +39,24 @@ public strictfp class LiteralRewriter extends AbstractExpressionRewriter {
             Literal literal = (Literal) expression;
             TypedLiteral typed = literal.getValue();
             TypedLiteral.LiteralType type = typed.getType();
+            Expression result;
             switch (type) {
-                case Integer: return rewriteInteger(literal, typed.getIntValue());
-                case Long: return rewriteLong(literal, typed.getLongValue());
-                case Double: return rewriteDouble(literal, typed.getDoubleValue());
-                case Float: return rewriteFloat(literal, typed.getFloatValue());
+                case Integer: result = rewriteInteger(literal, typed.getIntValue()); break;
+                case Long: result = rewriteLong(literal, typed.getLongValue()); break;
+                case Double: result = rewriteDouble(literal, typed.getDoubleValue()); break;
+                case Float: result = rewriteFloat(literal, typed.getFloatValue()); break;
+                default: return expression;
             }
+            // Need to ensure we don't change type by prettifying a literal
+            if (result != literal) {
+                JavaTypeInstance inType = literal.getInferredJavaType().getJavaTypeInstance();
+                JavaTypeInstance outType = result.getInferredJavaType().getJavaTypeInstance();
+                if (!inType.equals(outType) && inType instanceof RawJavaType && outType.implicitlyCastsTo(inType, null)) {
+                    InferredJavaType castType = new InferredJavaType((RawJavaType) inType, InferredJavaType.Source.LITERAL);
+                    return new CastExpression(BytecodeLoc.NONE, castType, result);
+                }
+            }
+            return result;
         }
         return expression;
     }
@@ -117,9 +129,9 @@ public strictfp class LiteralRewriter extends AbstractExpressionRewriter {
     }
 
     private static final InferredJavaType INFERRED_DOUBLE = new InferredJavaType(RawJavaType.DOUBLE, InferredJavaType.Source.LITERAL);
-    private static final StaticVariable D_MAX_VALUE = new StaticVariable(INFERRED_FLOAT, TypeConstants.DOUBLE, "MAX_VALUE");
-    private static final StaticVariable D_MIN_VALUE = new StaticVariable(INFERRED_FLOAT, TypeConstants.DOUBLE, "MIN_VALUE");
-    private static final StaticVariable D_MIN_NORMAL = new StaticVariable(INFERRED_FLOAT, TypeConstants.DOUBLE, "MIN_NORMAL");
+    private static final StaticVariable D_MAX_VALUE = new StaticVariable(INFERRED_DOUBLE, TypeConstants.DOUBLE, "MAX_VALUE");
+    private static final StaticVariable D_MIN_VALUE = new StaticVariable(INFERRED_DOUBLE, TypeConstants.DOUBLE, "MIN_VALUE");
+    private static final StaticVariable D_MIN_NORMAL = new StaticVariable(INFERRED_DOUBLE, TypeConstants.DOUBLE, "MIN_NORMAL");
     private static final StaticVariable D_NAN = new StaticVariable(INFERRED_DOUBLE, TypeConstants.DOUBLE, "NaN");
     private static final StaticVariable D_NEGATIVE_INFINITY = new StaticVariable(INFERRED_DOUBLE, TypeConstants.DOUBLE, "NEGATIVE_INFINITY");
     private static final StaticVariable D_POSITIVE_INFINITY = new StaticVariable(INFERRED_DOUBLE, TypeConstants.DOUBLE, "POSITIVE_INFINITY");
