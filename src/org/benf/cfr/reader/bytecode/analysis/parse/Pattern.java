@@ -13,9 +13,11 @@ import org.benf.cfr.reader.util.output.Dumpable;
 import org.benf.cfr.reader.util.output.DumpableWithPrecedence;
 import org.benf.cfr.reader.util.output.Dumper;
 
+import java.util.List;
+
 /*
- * Patterns are introduced very late by op04 rewriters, so don't have most of the
- * support required of LValue/Expression.
+ * Patterns are used in case statement and instanceof matching.
+ *
  */
 public interface Pattern extends Dumpable, TypeUsageCollectable {
 
@@ -26,4 +28,6 @@ public interface Pattern extends Dumpable, TypeUsageCollectable {
 //    boolean canThrow(ExceptionCheck caught);
 
     Dumper dump(Dumper d, boolean defines);
+
+    List<LValue> getDeclaredLValues();
 }

@@ -6,6 +6,9 @@ import org.benf.cfr.reader.bytecode.analysis.types.discovery.InferredJavaType;
 import org.benf.cfr.reader.state.TypeUsageCollector;
 import org.benf.cfr.reader.util.output.Dumper;
 
+import java.util.Collections;
+import java.util.List;
+
 public class TypePattern implements Pattern {
     private final LValue lValue;
 
@@ -31,5 +34,22 @@ public class TypePattern implements Pattern {
     @Override
     public void collectTypeUsages(TypeUsageCollector collector) {
         collector.collectFrom(lValue);
+    }
+
+    @Override
+    public List<LValue> getDeclaredLValues() {
+        return Collections.singletonList(lValue);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof TypePattern)) return false;
+        return lValue.equals(((TypePattern) o).lValue);
+    }
+
+    @Override
+    public int hashCode() {
+        return lValue.hashCode();
     }
 }

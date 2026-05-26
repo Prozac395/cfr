@@ -16,6 +16,7 @@ import org.benf.cfr.reader.bytecode.analysis.parse.expression.InstanceOfExpressi
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.Literal;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.LValueExpression;
 import org.benf.cfr.reader.bytecode.analysis.parse.lvalue.LocalVariable;
+import org.benf.cfr.reader.bytecode.analysis.parse.pattern.TypePattern;
 import org.benf.cfr.reader.bytecode.analysis.types.JavaTypeInstance;
 import org.benf.cfr.reader.bytecode.analysis.structured.StructuredScope;
 import org.benf.cfr.reader.bytecode.analysis.structured.StructuredStatement;
@@ -134,8 +135,7 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
                 BytecodeLoc.NONE,
                 ioe.getInferredJavaType(),
                 ioe.getLhs(),
-                ioe.getTypeInstance(),
-                lvalue);
+                new TypePattern(lvalue));
         sw.setCondition(ioed);
         firstContainer.nopOut();
     }
@@ -155,33 +155,18 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
         if (rebuilt != cond) sw.setCondition(rebuilt);
     }
 
+    /*
+     * Flatten an AND chain, drop operands of the form `null != t` where another
+     * operand defines t via instanceof. Returns the rebuilt expression, or the
+     * original if nothing changed.
+     */
     private static ConditionalExpression dropRedundantNullChecks(ConditionalExpression cond) {
         List<ConditionalExpression> operands = ListFactory.newList();
         flattenAnd(cond, operands);
         if (operands.size() <= 1) return cond;
-
-        Set<LValue> defined = SetFactory.newSet();
-        for (ConditionalExpression op : operands) {
-            LValue d = getDefinedLValue(op);
-            if (d != null) defined.add(d);
-        }
-
-        boolean changed = false;
-        Iterator<ConditionalExpression> it = operands.iterator();
-        while (it.hasNext()) {
-            LValue v = getNullCheckedLValue(it.next());
-            if (v != null && defined.contains(v)) {
-                it.remove();
-                changed = true;
-            }
-        }
-        if (!changed || operands.isEmpty()) return cond;
-
-        ConditionalExpression rebuilt = operands.get(0);
-        for (int i = 1; i < operands.size(); i++) {
-            rebuilt = new BooleanOperation(BytecodeLoc.NONE, rebuilt, operands.get(i), BoolOp.AND);
-        }
-        return rebuilt;
+        if (!dropRedundantNullChecksFromOperands(operands, collectDefined(operands))) return cond;
+        if (operands.isEmpty()) return cond;
+        return rebuildAnd(operands);
     }
 
     private static void tidy(StructuredIf sif) {
@@ -190,12 +175,7 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
         flattenAnd(cond, operands);
         if (operands.size() <= 1) return;
 
-        Set<LValue> defined = SetFactory.newSet();
-        for (ConditionalExpression op : operands) {
-            LValue d = getDefinedLValue(op);
-            if (d != null) defined.add(d);
-        }
-
+        Set<LValue> defined = collectDefined(operands);
         boolean changed = false;
         AssignmentExpression pushDown = null;
 
@@ -219,6 +199,29 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
         }
 
         // (1) Drop redundant null-checks of variables bound by a sibling defining instanceof.
+        changed |= dropRedundantNullChecksFromOperands(operands, defined);
+
+        if (!changed || operands.isEmpty()) return;
+
+        sif.setConditionalExpression(rebuildAnd(operands));
+
+        if (pushDown != null) {
+            prependAssignment(sif, pushDown);
+        }
+    }
+
+    private static Set<LValue> collectDefined(List<ConditionalExpression> operands) {
+        Set<LValue> defined = SetFactory.newSet();
+        for (ConditionalExpression op : operands) {
+            if (op instanceof InstanceOfExpressionDefining) {
+                defined.addAll(((InstanceOfExpressionDefining) op).getPattern().getDeclaredLValues());
+            }
+        }
+        return defined;
+    }
+
+    private static boolean dropRedundantNullChecksFromOperands(List<ConditionalExpression> operands, Set<LValue> defined) {
+        boolean changed = false;
         Iterator<ConditionalExpression> it = operands.iterator();
         while (it.hasNext()) {
             LValue v = getNullCheckedLValue(it.next());
@@ -227,19 +230,15 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
                 changed = true;
             }
         }
+        return changed;
+    }
 
-        if (!changed) return;
-        if (operands.isEmpty()) return; // defensive — shouldn't happen with well-formed input
-
+    private static ConditionalExpression rebuildAnd(List<ConditionalExpression> operands) {
         ConditionalExpression rebuilt = operands.get(0);
         for (int i = 1; i < operands.size(); i++) {
             rebuilt = new BooleanOperation(BytecodeLoc.NONE, rebuilt, operands.get(i), BoolOp.AND);
         }
-        sif.setConditionalExpression(rebuilt);
-
-        if (pushDown != null) {
-            prependAssignment(sif, pushDown);
-        }
+        return rebuilt;
     }
 
     /*
@@ -271,22 +270,6 @@ public class InstanceOfMatchCheckTransformer implements StructuredStatementTrans
             return;
         }
         out.add(e);
-    }
-
-    /*
-     * InstanceOfExpressionDefining extends AbstractExpression but does NOT
-     * implement ConditionalExpression — it must be wrapped in BooleanExpression
-     * to appear inside a boolean condition. Since `op` is typed as a
-     * ConditionalExpression, the only way to see an InstanceOfExpressionDefining
-     * here is through that wrap. ComparisonOperation by contrast already
-     * implements ConditionalExpression directly, so the matchers below don't
-     * need to unwrap.
-     */
-    private static LValue getDefinedLValue(ConditionalExpression op) {
-        if (op instanceof InstanceOfExpressionDefining) {
-            return ((InstanceOfExpressionDefining) op).getDefines();
-        }
-        return null;
     }
 
     /*

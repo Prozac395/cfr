@@ -6,6 +6,7 @@ import org.benf.cfr.reader.bytecode.analysis.parse.Expression;
 import org.benf.cfr.reader.bytecode.analysis.parse.LValue;
 import org.benf.cfr.reader.bytecode.analysis.parse.StatementContainer;
 import org.benf.cfr.reader.bytecode.analysis.parse.expression.*;
+import org.benf.cfr.reader.bytecode.analysis.parse.pattern.TypePattern;
 import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.AbstractExpressionRewriter;
 import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.ExpressionRewriterFlags;
 import org.benf.cfr.reader.bytecode.analysis.parse.utils.SSAIdentifiers;
@@ -220,8 +221,7 @@ public class InstanceOfAssignRewriter {
             ce = new InstanceOfExpressionDefining(BytecodeLoc.TODO,
                     new InferredJavaType(RawJavaType.BOOLEAN, InferredJavaType.Source.EXPRESSION),
                     new LValueExpression(obj),
-                    scopedEntity.getInferredJavaType().getJavaTypeInstance(),
-                    scopedEntity
+                    new TypePattern(scopedEntity)
             );
         } else if (ct.matchType == MatchType.ASSIGN_SIMPLE_J14) {
             LValue obj = objWildcard.getMatch();
@@ -230,8 +230,7 @@ public class InstanceOfAssignRewriter {
             ce = new InstanceOfExpressionDefining(BytecodeLoc.TODO,
                     new InferredJavaType(RawJavaType.BOOLEAN, InferredJavaType.Source.EXPRESSION),
                     new AssignmentExpression(BytecodeLoc.TODO,tmp, new LValueExpression(BytecodeLoc.TODO,obj)),
-                    scopedEntity.getInferredJavaType().getJavaTypeInstance(),
-                    scopedEntity
+                    new TypePattern(scopedEntity)
             );
         } else if (ct.matchType == MatchType.SIMPLE_J16) {
             LValue obj = objWildcard.getMatch();
@@ -244,8 +243,7 @@ public class InstanceOfAssignRewriter {
             ConditionalExpression newLhs = new InstanceOfExpressionDefining(BytecodeLoc.TODO,
                     new InferredJavaType(RawJavaType.BOOLEAN, InferredJavaType.Source.EXPRESSION),
                     new LValueExpression(obj),
-                    scopedEntity.getInferredJavaType().getJavaTypeInstance(),
-                    scopedEntity
+                    new TypePattern(scopedEntity)
             );
             ConditionalExpression newRhs = new ExpressionReplacingRewriter(originalAssign, new LValueExpression(scopedEntity)).rewriteExpression(bo.getRhs(), null, null, null);
             ce = new BooleanOperation(BytecodeLoc.NONE, newLhs, newRhs, bo.getOp());

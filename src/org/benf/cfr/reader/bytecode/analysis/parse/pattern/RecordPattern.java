@@ -17,6 +17,7 @@ import org.benf.cfr.reader.bytecode.analysis.types.discovery.InferredJavaType;
 import org.benf.cfr.reader.entities.ClassFileField;
 import org.benf.cfr.reader.state.TypeUsageCollector;
 import org.benf.cfr.reader.util.StringUtils;
+import org.benf.cfr.reader.util.collections.ListFactory;
 import org.benf.cfr.reader.util.output.Dumper;
 
 import java.util.List;
@@ -63,6 +64,33 @@ public class RecordPattern implements Pattern {
         for (LValue lv : params) {
             collector.collectFrom(lv);
         }
+    }
+
+    @Override
+    public List<LValue> getDeclaredLValues() {
+        List<LValue> out = ListFactory.newList();
+        if (!(outer instanceof RecordPatternPlaceholder)) {
+            out.add(outer);
+        }
+        for (LValue lv : params) {
+            if (!(lv instanceof RecordPatternPlaceholder)) {
+                out.add(lv);
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof RecordPattern)) return false;
+        RecordPattern other = (RecordPattern) o;
+        return outer.equals(other.outer) && params.equals(other.params);
+    }
+
+    @Override
+    public int hashCode() {
+        return outer.hashCode() * 31 + params.hashCode();
     }
 
     public static class RecordPatternPlaceholder extends AbstractLValue {

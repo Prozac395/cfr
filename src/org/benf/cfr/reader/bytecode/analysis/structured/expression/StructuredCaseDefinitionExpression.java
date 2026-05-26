@@ -25,6 +25,12 @@ import org.benf.cfr.reader.state.TypeUsageCollector;
 import org.benf.cfr.reader.util.annotation.Nullable;
 import org.benf.cfr.reader.util.output.Dumper;
 
+/*
+ * This represents a case statement at which 'content' (and any sub-component, if content is a record) is brought into scope
+ * content may be filtered by predicate.
+ *
+ * case Foo x where x.bob > 12
+ */
 public class StructuredCaseDefinitionExpression extends AbstractExpression {
 
     @Nullable
