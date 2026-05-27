@@ -15,6 +15,7 @@ import org.benf.cfr.reader.bytecode.analysis.parse.lvalue.LocalVariable;
 import org.benf.cfr.reader.bytecode.analysis.parse.lvalue.StaticVariable;
 import org.benf.cfr.reader.bytecode.analysis.parse.pattern.RecordPattern;
 import org.benf.cfr.reader.bytecode.analysis.parse.pattern.TypePattern;
+import org.benf.cfr.reader.bytecode.analysis.parse.pattern.WildcardPattern;
 import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.AbstractExpressionRewriter;
 import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.ExpressionRewriterFlags;
 import org.benf.cfr.reader.bytecode.analysis.parse.utils.BlockIdentifier;
@@ -1007,18 +1008,18 @@ public class SwitchPatternRewriter  implements Op04Rewriter, StructuredStatement
         for (Map.Entry<MemberFunctionInvokation, LValue> entry : assign.entrySet()) {
             keyByName.put(entry.getKey().getName(), entry.getValue());
         }
-        List<LValue> lvs = ListFactory.newList();
+        List<Pattern> patterns = ListFactory.newList();
         for (ClassFileField field : fields) {
             String name = field.getFieldName();
             LValue lv = keyByName.get(name);
             if (lv == null) {
                 InferredJavaType ijtField = new InferredJavaType(field.getField().getJavaTypeInstance(), InferredJavaType.Source.UNKNOWN);
-                lvs.add(new RecordPattern.RecordPatternPlaceholder(ijtField));
+                patterns.add(new WildcardPattern(ijtField));
             } else {
-                lvs.add(lv);
+                patterns.add(new TypePattern(lv));
             }
         }
-        return new RecordPattern(g.definitionLvalue, lvs);
+        return new RecordPattern(ijt, patterns);
     }
 
     // Updates controlsources - must be success path.

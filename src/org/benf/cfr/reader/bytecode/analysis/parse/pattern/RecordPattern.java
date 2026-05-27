@@ -1,20 +1,8 @@
 package org.benf.cfr.reader.bytecode.analysis.parse.pattern;
 
-import org.benf.cfr.reader.bytecode.analysis.parse.Expression;
 import org.benf.cfr.reader.bytecode.analysis.parse.LValue;
 import org.benf.cfr.reader.bytecode.analysis.parse.Pattern;
-import org.benf.cfr.reader.bytecode.analysis.parse.StatementContainer;
-import org.benf.cfr.reader.bytecode.analysis.parse.expression.misc.Precedence;
-import org.benf.cfr.reader.bytecode.analysis.parse.lvalue.AbstractLValue;
-import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.CloneHelper;
-import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.ExpressionRewriter;
-import org.benf.cfr.reader.bytecode.analysis.parse.rewriters.ExpressionRewriterFlags;
-import org.benf.cfr.reader.bytecode.analysis.parse.utils.LValueAssignmentCollector;
-import org.benf.cfr.reader.bytecode.analysis.parse.utils.LValueRewriter;
-import org.benf.cfr.reader.bytecode.analysis.parse.utils.SSAIdentifierFactory;
-import org.benf.cfr.reader.bytecode.analysis.parse.utils.SSAIdentifiers;
 import org.benf.cfr.reader.bytecode.analysis.types.discovery.InferredJavaType;
-import org.benf.cfr.reader.entities.ClassFileField;
 import org.benf.cfr.reader.state.TypeUsageCollector;
 import org.benf.cfr.reader.util.StringUtils;
 import org.benf.cfr.reader.util.collections.ListFactory;
@@ -23,31 +11,27 @@ import org.benf.cfr.reader.util.output.Dumper;
 import java.util.List;
 
 public class RecordPattern implements Pattern {
-    LValue outer;
-    List<LValue> params;
+    private final InferredJavaType type;
+    private final List<Pattern> params;
 
-    public RecordPattern(LValue outer, List<LValue> params) {
-        this.outer = outer;
+    public RecordPattern(InferredJavaType type, List<Pattern> params) {
+        this.type = type;
         this.params = params;
     }
 
     @Override
     public InferredJavaType getInferredJavaType() {
-        return outer.getInferredJavaType();
+        return type;
     }
 
     @Override
     public Dumper dump(Dumper d, boolean defines) {
-        d.dump(outer.getInferredJavaType().getJavaTypeInstance());
+        d.dump(type.getJavaTypeInstance());
         d.print('(');
         boolean first = true;
-        for (LValue lv : params) {
+        for (Pattern p : params) {
             first = StringUtils.comma(first, d);
-            if (lv instanceof RecordPatternPlaceholder) {
-                d.print("_");
-            } else {
-                LValue.Creation.dump(d, lv);
-            }
+            p.dump(d, defines);
         }
         d.print(')');
         return d;
@@ -60,22 +44,17 @@ public class RecordPattern implements Pattern {
 
     @Override
     public void collectTypeUsages(TypeUsageCollector collector) {
-        collector.collectFrom(outer);
-        for (LValue lv : params) {
-            collector.collectFrom(lv);
+        collector.collect(type.getJavaTypeInstance());
+        for (Pattern p : params) {
+            p.collectTypeUsages(collector);
         }
     }
 
     @Override
     public List<LValue> getDeclaredLValues() {
         List<LValue> out = ListFactory.newList();
-        if (!(outer instanceof RecordPatternPlaceholder)) {
-            out.add(outer);
-        }
-        for (LValue lv : params) {
-            if (!(lv instanceof RecordPatternPlaceholder)) {
-                out.add(lv);
-            }
+        for (Pattern p : params) {
+            out.addAll(p.getDeclaredLValues());
         }
         return out;
     }
@@ -85,78 +64,12 @@ public class RecordPattern implements Pattern {
         if (this == o) return true;
         if (!(o instanceof RecordPattern)) return false;
         RecordPattern other = (RecordPattern) o;
-        return outer.equals(other.outer) && params.equals(other.params);
+        return type.getJavaTypeInstance().equals(other.type.getJavaTypeInstance())
+                && params.equals(other.params);
     }
 
     @Override
     public int hashCode() {
-        return outer.hashCode() * 31 + params.hashCode();
-    }
-
-    public static class RecordPatternPlaceholder extends AbstractLValue {
-
-        public RecordPatternPlaceholder(InferredJavaType inferredJavaType) {
-            super(inferredJavaType);
-        }
-
-        @Override
-        public Dumper dumpInner(Dumper d) {
-            return d;
-        }
-
-        @Override
-        public Precedence getPrecedence() {
-            return Precedence.WEAKEST;
-        }
-
-        @Override
-        public int getNumberOfCreators() {
-            return 0;
-        }
-
-        @Override
-        public <T> void collectLValueAssignments(Expression assignedTo, StatementContainer<T> statementContainer, LValueAssignmentCollector<T> lValueAssigmentCollector) {
-
-        }
-
-        @Override
-        public SSAIdentifiers<LValue> collectVariableMutation(SSAIdentifierFactory<LValue, ?> ssaIdentifierFactory) {
-            return null;
-        }
-
-        @Override
-        public LValue replaceSingleUsageLValues(LValueRewriter lValueRewriter, SSAIdentifiers ssaIdentifiers, StatementContainer statementContainer) {
-            return this;
-        }
-
-        @Override
-        public LValue applyExpressionRewriter(ExpressionRewriter expressionRewriter, SSAIdentifiers ssaIdentifiers, StatementContainer statementContainer, ExpressionRewriterFlags flags) {
-            return this;
-        }
-
-        @Override
-        public void markFinal() {
-
-        }
-
-        @Override
-        public boolean isFinal() {
-            return false;
-        }
-
-        @Override
-        public void markVar() {
-
-        }
-
-        @Override
-        public boolean isVar() {
-            return false;
-        }
-
-        @Override
-        public LValue deepClone(CloneHelper cloneHelper) {
-            return this;
-        }
+        return type.getJavaTypeInstance().hashCode() * 31 + params.hashCode();
     }
 }
