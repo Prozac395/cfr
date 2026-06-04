@@ -511,6 +511,7 @@ public class SwitchPatternRewriter  implements Op04Rewriter, StructuredStatement
         StructuredStatementTransformer usagecheck = new StructuredStatementTransformer() {
             @Override
             public StructuredStatement transform(StructuredStatement in, StructuredScope scope) {
+                in.transformStructuredChildren(this, scope);
                 in.rewriteExpressions(uc);
                 return in;
             }
